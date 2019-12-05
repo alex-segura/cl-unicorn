@@ -1,3 +1,5 @@
+;;;; cl-unicorn.asd
+
 (defsystem cl-unicorn
   :name "cl-unicorn"
   :description "Bindings to the unicorn engine emulator library"
@@ -6,6 +8,7 @@
   :depends-on (#:alexandria
                #:cl-autowrap/libffi
                #:cl-plus-c)
+  :in-order-to ((test-op (test-op #:cl-unicorn-test)))
   :pathname "src"
   :serial t
   :components
@@ -33,7 +36,12 @@
   :version "0.0.1"
   :author "Alex Segura <alex@lispm.dev>"
   :depends-on (#:cl-unicorn #:fiveam)
+  :perform (test-op (o s)
+                    (uiop:symbol-call :fiveam
+                                      '#:run!
+                                      (uiop:find-symbol* '#:unicorn :unicorn-test)))
   :pathname "test"
   :serial t
   :components
-  ((:file "package")))
+  ((:file "package")
+   (:file "suite")))
