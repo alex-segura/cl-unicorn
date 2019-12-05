@@ -1,30 +1,161 @@
+;;;; x86.lisp
+
 (in-package #:unicorn-test)
 
-(defun make-bytes (&rest bytes)
-  (make-array (length bytes)
-              :element-type '(unsigned-byte 8)
-              :initial-contents bytes))
+(defstruct basic-block
+  address
+  size)
 
-(defun dump-registers (engine)
-  (dolist (reg (list :rax :rbx :rcx :rdx
-                     :rsi :rdi :r8 :r9
-                     :r10 :r11 :r12 :r13
-                     :r14 :r15 :rsp))
-    (format t "~a: ~16,'0x~%" (symbol-name reg) (read-register engine reg))))
+(defstruct basic-block-test
+  blocks
+  block-number)
 
-(defcallback trace-hook :void
+(defvar *basic-block-test*)
+
+(autowrap:defcallback test-basic-blocks-hook :void
     ((uc :pointer)
      (address :unsigned-long-long)
      (size :unsigned-int)
      (user-data :pointer))
   (declare (ignore uc user-data))
-  (cs:with-open-handle (csh :x86 :64)
-    (cs:do-disassembled-instructions (insn csh (read-memory uc address size))
-      (format t "0x~x: ~a ~a~%" address
-              (cs:instruction-mnemonic insn)
-              (cs:instruction-operand-string insn)))))
+  (let ((bb (nth (basic-block-test-block-number *basic-block-test*)
+                 (basic-block-test-blocks *basic-block-test*))))
+    (assert (and (= address (basic-block-address bb))
+                 (= size (basic-block-size bb))))
+    (incf (basic-block-test-block-number *basic-block-test*))))
 
-(defun test ()
+(test test-basic-blocks
+  (with-emulator (uc :x86 :32)
+    (let* ((address #x100000)
+           (*basic-block-test*
+             (make-basic-block-test
+              :blocks
+              (list (make-basic-block
+                     :address address
+                     :size 6)
+                    (make-basic-block
+                     :address (+ address 6)
+                     :size 3))
+              :block-number 0))
+           (code (make-bytes #x33 #xc0 ; xor eax, eax
+                             #x90      ; nop
+                             #x90      ; nop
+                             #xeb #x00 ; jmp $+2
+                             #x90      ; nop
+                             #x90      ; nop
+                             #x90)))   ; nop
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (add-hook uc :block 'test-basic-blocks-hook :begin 1 :end 0)
+      (is (null (start uc :begin address :until (+ address (length code))))
+          "Basic block assertions ran without errors"))))
+
+(autowrap:defcallback hook-block :void
+    ((uc :pointer)
+     (address :unsigned-long-long)
+     (size :unsigned-int)
+     (user-data :pointer))
+  (declare (ignore uc user-data))
+  (format t "~&>>> Tracing basic block at 0x~x block-size=0x~x~%" address size))
+
+(autowrap:defcallback hook-code :void
+    ((uc :pointer)
+     (address :unsigned-long-long)
+     (size :unsigned-int)
+     (user-data :pointer))
+  (declare (ignore user-data))
+  (format t "~&>>> Tracing instruction at 0x~x: instruction-size=0x~x~%" address size)
+  (format t "~&>>> --- EFLAGS is 0x~x~%" (read-register uc :eflags)))
+
+(test test-i386
+  (with-emulator (uc :x86 :32)
+    (let* ((code (make-bytes #x41 #x4a #x66 #x0f #xef #xc1)) ; inc ecx; dec edx; pxor xmm0, xmm1
+           (address #x1000000))
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (write-register uc :ecx #x1234)
+      (write-register uc :edx #x7890)
+      (write-register uc :xmm0 (list #x08090a0b0c0d0e0f #x0001020304050607))
+      (write-register uc :xmm1 (list #x8090a0b0c0d0e0f0 #x0010203040506070))
+      (add-hook uc :block 'hook-block)
+      (add-hook uc :code 'hook-code)
+      (start uc :begin address :until (+ address (length code)))
+      (is (= #x1235 (read-register uc :ecx)))
+      (is (= #x788f (read-register uc :edx)))
+      (is (equal (list #x8899aabbccddeeff #x0011223344556677)
+                 (read-register uc :xmm0 :size 2)))
+      (read-memory uc address 4))))
+
+(test test-i386-jump
+  (with-emulator (uc :x86 :32)
+    (let ((code (make-bytes #xeb #x02 #x90 #x90 #x90 #x90 #x90))
+          (address #x1000000))
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (add-hook uc :block 'hook-block)
+      (add-hook uc :code 'hook-code)
+      (is (null (start uc :begin address :until (+ address (length code))))))))
+
+(autowrap:defcallback hook-in :void
+    ((uc :pointer)
+     (port :unsigned-int)
+     (size :int)
+     (user-data :pointer))
+  (declare (ignore user-data))
+  (let ((eip (read-register uc :eip)))
+    (format t "~&--- reading from port 0x~x, size: ~a, address: 0x~x~%"
+            port size eip)
+    (case size
+      (1 #xf1)
+      (2 #xf2)
+      (4 #xf4)
+      (t #x00))))
+
+(autowrap:defcallback hook-out :void
+    ((uc :pointer)
+     (port :unsigned-int)
+     (size :int)
+     (value :unsigned-int)
+     (user-data :pointer))
+  (declare (ignore user-data))
+  (let ((eip (read-register uc :eip))
+        (tmp nil))
+    (format t "~&--- writing to port 0x~x, size: ~a, value: 0x~x, address: 0x~x~%"
+            port size value eip)
+    (setq tmp
+          (case size
+            (1 (read-register uc :al))
+            (2 (read-register uc :ax))
+            (4 (read-register uc :eax))))
+    (when tmp
+      (format t "~&--- register value = 0x~x~%" tmp))))
+
+(test test-i386-inout
+  (with-emulator (uc :x86 :32)
+    (let ((address #x1000000)
+          (code (make-bytes #x41 #xe4 #x3f #x4a #xe6 #x46 #x43)))
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (write-register uc :eax #x1234)
+      (write-register uc :ecx #x6789)
+      (add-hook uc :block 'hook-block)
+      (add-hook uc :code 'hook-code)
+      (add-hook uc :insn 'hook-in :instruction-id :in)
+      (add-hook uc :insn 'hook-out :instruction-id :out)
+      (is (null (start uc :begin address :until (+ address (length code)))))
+      (is (= (read-register uc :eax) #x12f0))
+      (is (= (read-register uc :ecx) #x678a)))))
+
+(test test-i386-loop
+  (with-emulator (uc :x86 :32)))
+
+(test test-i386-invalid-mem-read)
+
+(test test-i386-invalid-mem-write)
+
+(test test-i386-jump-invalid)
+
+(test test-x86-64
   (let ((address #x1000000)
         (code (make-bytes
                #x41 #xBC #x3B #xB0
@@ -64,12 +195,12 @@
       (write-register uc :r14 #x595f72f6e4017f6e)
       (write-register uc :r15 #x1efd97aea331cccc)
       (write-register uc :rsp (+ address #x200000))
-      (add-hook uc :code 'trace-hook)
-      (dump-registers uc)
-      (start uc
-             :begin address
-             :until (1- (+ address (length code))))
-      (dump-registers uc))))
+      (add-hook uc :code 'hook-code)
+      (is (null (start uc :begin address
+                          :until (1- (+ address (length code)))))))))
 
+(test test-x86-64-syscall)
 
-#+nil(test)
+(test test-x86-16)
+
+;; (test test-i386-reg-save)

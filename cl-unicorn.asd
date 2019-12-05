@@ -44,4 +44,5 @@
   :serial t
   :components
   ((:file "package")
-   (:file "suite")))
+   (:file "suite")
+   (:file "util")))

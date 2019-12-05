@@ -22,8 +22,8 @@
            ;; #:read-registers
            #:write-memory
            #:read-memory
-           #:start-emulator
-           #:stop-emulator
+           #:start
+           #:stop
            #:add-hook
            #:remove-hook
            #:map-memory

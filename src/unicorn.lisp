@@ -62,15 +62,28 @@
 
 (defun write-register (engine register value)
   "Write VALUE to REGISTER of ENGINE."
-  (c-with ((val :unsigned-long-long))
-    (setf val value)
-    (check-rc (uc-reg-write engine (register-enum-value register) (val &)))))
+  (if (listp value)
+      (c-with ((val :unsigned-long-long :count (length value)))
+        (loop :for i :upfrom 0
+              :for elt :in value
+              :do (setf (val i) elt))
+        (check-rc (uc-reg-write engine (register-enum-value register) (val &))))
+      (c-with ((val :unsigned-long-long))
+        (setf val value)
+        (check-rc (uc-reg-write engine (register-enum-value register) (val &))))))
 
-(defun read-register (engine register)
+(defun read-register (engine register &key (size 1))
   "Read the REGISTER of ENGINE."
-  (c-with ((val :unsigned-long-long))
+  (assert (> size 0) (size)
+          "Size must be greater than zero: ~s" size)
+  (c-with ((val :unsigned-long-long :count size))
+    (setf val 0)
     (check-rc (uc-reg-read engine (register-enum-value register) (val &)))
-    val))
+    (if (= size 1)
+        val
+        (loop :repeat size
+              :for i :upfrom 0
+              :collect (val i)))))
 
 (defun write-memory (engine address bytes)
   "Write BYTES to the memory of ENGINE, starting at ADDRESS."
@@ -105,18 +118,18 @@ The keyword arguments alter this:
 
 (defun add-hook (engine type function
                  &key (user-data (cffi:null-pointer))
-                   (begin 0)
-                   (end #xffffffffffffffff)
-                   (instruction-id (cffi:null-pointer)))
+                   (begin 1) (end 0) (instruction-id 0))
   "Add a hook to ENGINE. TYPE must be a valid HOOK-TYPE and FUNCTION must designate a C
 callback. USER-DATA is an optional pointer to .
 BEGIN and END specify the valid range for the callback function."
   (c-with ((hook unicorn-ffi:uc-hook))
-    (uc-hook-add engine (hook &)
-                 (enum-value 'unicorn-ffi:uc-hook-type type)
+    (uc-hook-add engine (hook &) (enum-value 'unicorn-ffi:uc-hook-type type)
                  (callback function)
                  user-data
-                 begin end :pointer instruction-id)
+                 begin end
+                 :unsigned-long-long
+                 (when instruction-id
+                   (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)))
     hook))
 
 (defun remove-hook (engine hook)
