@@ -45,4 +45,5 @@
   :components
   ((:file "package")
    (:file "suite")
-   (:file "util")))
+   (:file "util")
+   (:file "x86")))

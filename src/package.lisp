@@ -14,8 +14,6 @@
         #:unicorn-ffi.functions)
   (:nicknames #:uc)
   (:export #:with-emulator
-           #:open-engine
-           #:close-engine
            #:write-register
            ;; #:write-registers
            #:read-register
@@ -29,4 +27,6 @@
            #:map-memory
            #:unmap-memory
            #:set-memory-permissions
-           #:list-memory-regions))
+           #:list-memory-regions
+           #:+second-scale+
+           #:unicorn-error))

@@ -147,13 +147,67 @@
       (is (= (read-register uc :ecx) #x678a)))))
 
 (test test-i386-loop
-  (with-emulator (uc :x86 :32)))
+  (let ((address #x1000000)
+        (code (make-bytes #x41 #x4a #xeb #xfe)))
+    (with-emulator (uc :x86 :32)
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (write-register uc :ecx #x1234)
+      (write-register uc :edx #x7890)
+      (start uc :begin address
+                :until (+ address (length code))
+                :timeout (* 2 +second-scale+))
+      (is (= (read-register uc :ecx) #x1235))
+      (is (= (read-register uc :edx) #x788f)))))
 
-(test test-i386-invalid-mem-read)
+(test test-i386-invalid-mem-read
+  (let ((address #x1000000)
+        (code (make-bytes #x8b #x0d #xaa #xaa #xaa #xaa)))
+    (with-emulator (uc :x86 :32)
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (signals unicorn-error (start uc :begin address :until (+ address (length code)))))))
 
-(test test-i386-invalid-mem-write)
+(test test-i386-invalid-mem-write
+  (let ((address #x1000000)
+        (code (make-bytes #x89 #x0d #xaa #xaa #xaa #xaa)))
+    (with-emulator (uc :x86 :32)
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (signals unicorn-error (start uc :begin address :until (+ address (length code)))))))
 
-(test test-i386-jump-invalid)
+(test test-i386-jump-invalid
+  (let ((address #x1000000)
+        (code (make-bytes #xe9 #xe9 #xee #xee #xee #xee)))
+    (with-emulator (uc :x86 :32)
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (signals unicorn-error (start uc :begin address :until (+ address (length code)))))))
+
+(autowrap:defcallback hook-mem64 :void
+    ((uc :pointer)
+     (mem-type unicorn-ffi:uc-mem-type)
+     (address :unsigned-long-long)
+     (size :int)
+     (value :long-long)
+     (user-data :pointer))
+  (declare (ignore uc user-data))
+  (case mem-type
+    (:read
+     (format t "~&Memory is being READ at 0x~x, data size = ~a~%" address size))
+    (:write
+     (format t "~&Memory is being WRITTEN at 0x~x, data size = ~a, data value = 0x~x~%"
+             address size value))))
+
+(autowrap:defcallback hook-code64 :void
+    ((uc :pointer)
+     (address :unsigned-long-long)
+     (size :unsigned-int)
+     (user-data :pointer))
+  (declare (ignore user-data))
+  (let ((rip (read-register uc :rip)))
+    (format t "~&>>> Tracing instruction at 0x~x, instruction size = 0x~x~%" address size)
+    (format t "~&>>> RIP is 0x~x~%" rip)))
 
 (test test-x86-64
   (let ((address #x1000000)
@@ -195,12 +249,41 @@
       (write-register uc :r14 #x595f72f6e4017f6e)
       (write-register uc :r15 #x1efd97aea331cccc)
       (write-register uc :rsp (+ address #x200000))
-      (add-hook uc :code 'hook-code)
+      (add-hook uc :block 'hook-block)
+      (add-hook uc :code 'hook-code64 :begin address :end (+ address 20))
+      (add-hook uc :mem-write 'hook-mem64)
       (is (null (start uc :begin address
                           :until (1- (+ address (length code)))))))))
 
-(test test-x86-64-syscall)
+(autowrap:defcallback hook-syscall :void
+    ((uc :pointer)
+     (user-data :pointer))
+  (declare (ignore user-data))
+  (let ((rax (read-register uc :rax)))
+    (assert (= rax #x100) (rax) "RAX is unexpected: ~a" rax))
+  (write-register uc :rax #x200))
 
-(test test-x86-16)
+(test test-x86-64-syscall
+  (let ((address #x1000000)
+        (code (make-bytes #x0f #x05)))
+    (with-emulator (uc :x86 :64)
+      (map-memory uc address (* 2 1024 1024) :all)
+      (write-memory uc address code)
+      (add-hook uc :insn 'hook-syscall :instruction-id :syscall)
+      (write-register uc :rax #x100)
+      (is (null (start uc :begin address :until (+ address (length code)))))
+      (is (= #x200 (read-register uc :rax))))))
+
+(test test-x86-16
+  (let ((address 0)
+        (code (make-bytes #x00 #x00)))
+    (with-emulator (uc :x86 :16)
+      (map-memory uc address (* 8 1024) :all)
+      (write-memory uc address code)
+      (write-register uc :eax 7)
+      (write-register uc :ebx 5)
+      (write-register uc :esi 6)
+      (start uc :begin address :until (+ address (length code)))
+      (is (= (aref (read-memory uc 11 1) 0) 7)))))
 
 ;; (test test-i386-reg-save)

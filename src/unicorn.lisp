@@ -50,7 +50,7 @@
 (defun open-engine (architecture mode)
   (c-with ((uc* :pointer))
     (check-rc (uc-open architecture mode (uc* &)))
-    (unicorn-ffi::make-uc-engine :ptr uc*)))
+    (autowrap:wrap-pointer uc* 'unicorn-ffi:uc-engine)))
 
 (defun close-engine (engine)
   (check-rc (uc-close engine)))
@@ -99,10 +99,10 @@
 (defun start (engine &key (begin 0) (until 0) (timeout 0) (count 0))
   "Start the emulation of ENGINE. The default behavior is to run until completion (or error).
 The keyword arguments alter this:
-+ :BEGIN is the (optional) start address.
-+ :UNTIL (if greater than BEGIN) is the (optional) end address.
-+ :TIMEOUT (if nonzero) is the time (in usecs) to emulate.
-+ :COUNT (if nonzero) is the number of instructions to emulate."
+- :BEGIN is the (optional) start address.
+- :UNTIL (if greater than BEGIN) is the (optional) end address.
+- :TIMEOUT (if nonzero) is the time (in usecs) to emulate.
+- :COUNT (if nonzero) is the number of instructions to emulate."
   (check-rc (uc-emu-start engine begin until timeout count)))
 
 (defun stop (engine)
@@ -116,20 +116,31 @@ The keyword arguments alter this:
   unicorn-ffi:+uc-prot-read+
   unicorn-ffi:+uc-prot-write+)
 
+#+nil
+(defcallback generic-callback :void
+    ((uc :pointer)
+     (address :unsigned-long-long)
+     (size :unsigned-int)
+     (user-data :pointer))
+  )
+
 (defun add-hook (engine type function
                  &key (user-data (cffi:null-pointer))
-                   (begin 1) (end 0) (instruction-id 0))
+                   (begin 1) (end 0) (instruction-id nil))
   "Add a hook to ENGINE. TYPE must be a valid HOOK-TYPE and FUNCTION must designate a C
 callback. USER-DATA is an optional pointer to .
 BEGIN and END specify the valid range for the callback function."
   (c-with ((hook unicorn-ffi:uc-hook))
-    (uc-hook-add engine (hook &) (enum-value 'unicorn-ffi:uc-hook-type type)
+    (uc-hook-add engine
+                 (hook &)
+                 (enum-value 'unicorn-ffi:uc-hook-type type)
                  (callback function)
                  user-data
                  begin end
                  :unsigned-long-long
-                 (when instruction-id
-                   (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)))
+                 (if instruction-id
+                     (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)
+                     0))
     hook))
 
 (defun remove-hook (engine hook)
@@ -166,3 +177,5 @@ BODY."
          (*architecture* ,architecture))
      (unwind-protect (progn ,@body)
        (close-engine ,var))))
+
+(defconstant +second-scale+ unicorn-ffi:+uc-second-scale+)
