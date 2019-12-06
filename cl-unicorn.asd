@@ -7,7 +7,8 @@
   :author "Alex Segura <alex@lispm.dev>"
   :depends-on (#:alexandria
                #:cl-autowrap/libffi
-               #:cl-plus-c)
+               #:cl-plus-c
+               #:trivial-garbage)
   :in-order-to ((test-op (test-op #:cl-unicorn-test)))
   :pathname "src"
   :serial t

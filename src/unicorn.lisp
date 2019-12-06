@@ -1,3 +1,5 @@
+;;;; unicorn.lisp
+
 (in-package #:unicorn)
 
 (define-condition unicorn-error (error)
@@ -42,10 +44,9 @@
     (not (zerop (uc-arch-supported arch)))))
 
 (defun list-supported-architectures ()
-  (remove-if-not #'architecture-supported-p
-                 (autowrap:foreign-enum-values
-                  (autowrap:find-type 'unicorn-ffi:uc-arch))
-                 :key #'car))
+  (let ((vals (autowrap:foreign-enum-values (autowrap:find-type 'unicorn-ffi:uc-arch))))
+    (mapcar #'car
+            (remove-if-not #'architecture-supported-p vals :key #'car))))
 
 (defun open-engine (architecture mode)
   (c-with ((uc* :pointer))
@@ -53,7 +54,8 @@
     (autowrap:wrap-pointer uc* 'unicorn-ffi:uc-engine)))
 
 (defun close-engine (engine)
-  (check-rc (uc-close engine)))
+  (check-rc (uc-close engine))
+  (invalidate engine))
 
 (defun query (engine query)
   (c-with ((r :unsigned-int))
@@ -105,6 +107,9 @@ The keyword arguments alter this:
 - :COUNT (if nonzero) is the number of instructions to emulate."
   (check-rc (uc-emu-start engine begin until timeout count)))
 
+(defconstant +second-scale+ unicorn-ffi:+uc-second-scale+)
+(defconstant +millisecond-scale+ unicorn-ffi:+uc-milisecond-scale+)
+
 (defun stop (engine)
   "Stop the emulation of ENGINE."
   (check-rc (uc-emu-stop engine)))
@@ -117,12 +122,12 @@ The keyword arguments alter this:
   unicorn-ffi:+uc-prot-write+)
 
 #+nil
-(defcallback generic-callback :void
+(defcallback memory-callback :void
     ((uc :pointer)
      (address :unsigned-long-long)
      (size :unsigned-int)
      (user-data :pointer))
-  )
+  (let ((gethash (autowrap:) *hooks*))))
 
 (defun add-hook (engine type function
                  &key (user-data (cffi:null-pointer))
@@ -130,47 +135,62 @@ The keyword arguments alter this:
   "Add a hook to ENGINE. TYPE must be a valid HOOK-TYPE and FUNCTION must designate a C
 callback. USER-DATA is an optional pointer to .
 BEGIN and END specify the valid range for the callback function."
-  (c-with ((hook unicorn-ffi:uc-hook))
-    (uc-hook-add engine
-                 (hook &)
-                 (enum-value 'unicorn-ffi:uc-hook-type type)
-                 (callback function)
-                 user-data
-                 begin end
-                 :unsigned-long-long
-                 (if instruction-id
-                     (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)
-                     0))
+  (c-with ((hook unicorn-ffi:uc-hook)
+           (user-data :pointer))
+    (check-rc
+     (uc-hook-add engine
+                  (hook &)
+                  (enum-value 'unicorn-ffi:uc-hook-type type)
+                  (callback function)
+                  user-data
+                  begin
+                  end
+                  :unsigned-long-long
+                  (if instruction-id
+                      (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)
+                      0)))
     hook))
 
 (defun remove-hook (engine hook)
   "Remove HOOK from ENGINE."
-  (uc-hook-del engine hook))
+  (check-rc (uc-hook-del engine hook)))
 
 (defun map-memory (engine address size &rest permissions)
   "Map a region of memory in ENGINE."
-  (uc-mem-map engine address size (mask-apply 'uc-prot permissions)))
+  (check-rc (uc-mem-map engine address size (mask-apply 'uc-prot permissions))))
 
 (defun unmap-memory (engine address size)
   "Unmap a region of memory from ENGINE."
-  (uc-mem-unmap engine address size))
+  (check-rc (uc-mem-unmap engine address size)))
 
 (defun set-memory-permissions (engine address size &rest permissions)
   "Adjust the memory protection within ENGINE to PERMISSIONS for the address range ADDRESS to
 ADDRESS + SIZE."
-  (uc-mem-protect engine address size (mask-apply 'uc-prot permissions)))
+  (check-rc (uc-mem-protect engine address size (mask-apply 'uc-prot permissions))))
 
 #+nil
+(progn
 (defun list-memory-regions (engine)
-  (c-let ((regions :pointer)
-          (count :unsigned-int))
-    (unwind-protect
-         (progn (check-rc (uc-mem-regions engine (regions &) (count &)))
-                (loop :for i :upfrom 0 :to count
-                      :collect (c-)))
-      (uc-free regions))))
+  (c-with ((regions :pointer)
+           (count :unsigned-int))
+    (check-rc (uc-mem-regions engine (regions &) (count &)))
+    (loop :repeat count
+          :for i :upfrom 0
+          :collect (let* ((ptr (autowrap:c-aref regions i))
+                          (region (autowrap:wrap-pointer ptr 'unicorn-ffi:uc-mem-region)))
+                     (tg:finalize region (lambda () (uc-free ptr)))))))
 
-(defmacro with-emulator ((var architecture mode) &body body)
+(defun memory-region-begin (region)
+  (uc-mem-region.begin region))
+
+(defun memory-region-end (region)
+  (uc-mem-region.end region))
+
+(defun memory-region-permissions (region)
+  (mask-keywords 'uc-prot (uc-mem-region.perms region)))
+)
+
+(defmacro with-open-engine ((var architecture mode) &body body)
   "Bind VAR to an open unicorn engine using ARCHITECTURE and MODE within the dynamic context of
 BODY."
   `(let ((,var (open-engine ,architecture ,mode))
@@ -178,4 +198,18 @@ BODY."
      (unwind-protect (progn ,@body)
        (close-engine ,var))))
 
-(defconstant +second-scale+ unicorn-ffi:+uc-second-scale+)
+(defun make-context (engine)
+  (c-with ((context* :pointer))
+    (check-rc (uc-context-alloc engine (context* &)))
+    (let* ((context (autowrap:wrap-pointer context* 'unicorn-ffi:uc-context))
+           (ptr (ptr context)))
+      (tg:finalize context (lambda () (uc-free ptr)))
+      context)))
+
+(defun save-context (engine)
+  (let ((context (make-context engine)))
+    (check-rc (uc-context-save engine context))
+    context))
+
+(defun restore-context (engine context)
+  (check-rc (uc-context-restore engine context)))

@@ -13,11 +13,14 @@
         #:unicorn-ffi.accessors
         #:unicorn-ffi.functions)
   (:nicknames #:uc)
-  (:export #:with-emulator
+  (:export #:+second-scale+
+           #:+millisecond-scale+
+           #:unicorn-error
+           #:open-engine
+           #:close-engine
+           #:with-open-engine
            #:write-register
-           ;; #:write-registers
            #:read-register
-           ;; #:read-registers
            #:write-memory
            #:read-memory
            #:start
@@ -27,6 +30,6 @@
            #:map-memory
            #:unmap-memory
            #:set-memory-permissions
-           #:list-memory-regions
-           #:+second-scale+
-           #:unicorn-error))
+           #:make-context
+           #:save-context
+           #:restore-context))
