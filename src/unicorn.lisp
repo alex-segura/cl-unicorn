@@ -23,22 +23,6 @@
     (uc-version (major &) (minor &))
     (values major minor)))
 
-(defvar *architecture*)
-(defvar *hooks* nil)
-
-(defun register-enum-for-architecture (architecture)
-  (case architecture
-    (:arm 'unicorn-ffi:uc-arm-reg)
-    (:arm64 'unicorn-ffi:uc-arm64-reg)
-    (:mips 'unicorn-ffi:uc-mips-reg)
-    (:x86 'unicorn-ffi:uc-x86-reg)
-    (:sparc 'unicorn-ffi:uc-sparc-reg)
-    (:m68k 'unicorn-ffi:uc-m68k-reg)
-    (t (error 'unicorn-error :code unicorn-ffi:+UC-ERR-ARCH+))))
-
-(defun register-enum-value (reg)
-  (enum-value (register-enum-for-architecture *architecture*) reg))
-
 (defun architecture-supported-p (arch)
   (when (enum-value 'unicorn-ffi:uc-arch arch)
     (not (zerop (uc-arch-supported arch)))))
@@ -58,34 +42,55 @@
   (invalidate engine))
 
 (defun query (engine query)
-  (c-with ((r :unsigned-int))
-    (check-rc (uc-query engine query (r &)))
-    r))
+  (c-with ((val :unsigned-int))
+    (check-rc (uc-query engine query (val &)))
+    (case query
+      (:arch (enum-key 'unicorn-ffi:uc-arch val))
+      (:mode (enum-key 'unicorn-ffi:uc-mode val))
+      (:page-size val))))
+
+(defun architecture-register-enum (architecture)
+  (case architecture
+    (:arm 'unicorn-ffi:uc-arm-reg)
+    (:arm64 'unicorn-ffi:uc-arm64-reg)
+    (:mips 'unicorn-ffi:uc-mips-reg)
+    (:x86 'unicorn-ffi:uc-x86-reg)
+    (:sparc 'unicorn-ffi:uc-sparc-reg)
+    (:m68k 'unicorn-ffi:uc-m68k-reg)
+    (t (error 'unicorn-error :code unicorn-ffi:+UC-ERR-ARCH+))))
+
+(defun architecture-register (architecture register)
+  (enum-value (architecture-register-enum architecture) register))
+
+(defun keyword-register (engine register)
+  (architecture-register (query engine :arch) register))
 
 (defun write-register (engine register value)
   "Write VALUE to REGISTER of ENGINE."
-  (if (listp value)
-      (c-with ((val :unsigned-long-long :count (length value)))
-        (loop :for i :upfrom 0
-              :for elt :in value
-              :do (setf (val i) elt))
-        (check-rc (uc-reg-write engine (register-enum-value register) (val &))))
-      (c-with ((val :unsigned-long-long))
-        (setf val value)
-        (check-rc (uc-reg-write engine (register-enum-value register) (val &))))))
+  (let ((register (keyword-register engine register)))
+    (if (listp value)
+        (c-with ((val :unsigned-long-long :count (length value)))
+          (loop :for i :upfrom 0
+                :for elt :in value
+                :do (setf (val i) elt))
+          (check-rc (uc-reg-write engine register (val &))))
+        (c-with ((val :unsigned-long-long))
+          (setf val value)
+          (check-rc (uc-reg-write engine register (val &)))))))
 
 (defun read-register (engine register &key (size 1))
   "Read the REGISTER of ENGINE."
   (assert (> size 0) (size)
           "Size must be greater than zero: ~s" size)
-  (c-with ((val :unsigned-long-long :count size))
-    (setf val 0)
-    (check-rc (uc-reg-read engine (register-enum-value register) (val &)))
-    (if (= size 1)
-        val
-        (loop :repeat size
-              :for i :upfrom 0
-              :collect (val i)))))
+  (let ((register (keyword-register engine register)))
+    (c-with ((val :unsigned-long-long :count size))
+      (setf val 0)
+      (check-rc (uc-reg-read engine register (val &)))
+      (if (= size 1)
+          val
+          (loop :repeat size
+                :for i :upfrom 0
+                :collect (val i))))))
 
 (defun write-memory (engine address bytes)
   "Write BYTES to the memory of ENGINE, starting at ADDRESS."
@@ -193,8 +198,7 @@ ADDRESS + SIZE."
 (defmacro with-open-engine ((var architecture mode) &body body)
   "Bind VAR to an open unicorn engine using ARCHITECTURE and MODE within the dynamic context of
 BODY."
-  `(let ((,var (open-engine ,architecture ,mode))
-         (*architecture* ,architecture))
+  `(let ((,var (open-engine ,architecture ,mode)))
      (unwind-protect (progn ,@body)
        (close-engine ,var))))
 
