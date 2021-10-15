@@ -19,6 +19,7 @@
            #:open-engine
            #:close-engine
            #:with-open-engine
+           #:query
            #:write-register
            #:read-register
            #:write-memory

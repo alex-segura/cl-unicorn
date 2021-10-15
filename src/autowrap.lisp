@@ -14,4 +14,5 @@
                    "bits/stdint"
                    "machine/_types.h")
  :exclude-definitions ("truncate" "ftruncate" "abs")
- :spec-path '(:cl-unicorn :autowrap-spec))
+ :spec-path '(:cl-unicorn :autowrap-spec)
+ :release-p cl:t)

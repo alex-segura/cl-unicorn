@@ -35,7 +35,7 @@
 (defun open-engine (architecture mode)
   (c-with ((uc* :pointer))
     (check-rc (uc-open architecture mode (uc* &)))
-    (autowrap:wrap-pointer uc* 'unicorn-ffi:uc-engine)))
+    (autowrap:wrap-pointer uc* 'unicorn-ffi::uc-engine)))
 
 (defun close-engine (engine)
   (check-rc (uc-close engine))
@@ -46,7 +46,7 @@
     (check-rc (uc-query engine query (val &)))
     (case query
       (:arch (enum-key 'unicorn-ffi:uc-arch val))
-      (:mode (enum-key 'unicorn-ffi:uc-mode val))
+      (:mode val)
       (:page-size val))))
 
 (defun architecture-register-enum (architecture)
@@ -64,6 +64,21 @@
 
 (defun keyword-register (engine register)
   (architecture-register (query engine :arch) register))
+
+#+nil
+(defgeneric write-register (engine register value)
+  (:method (engine register (value fixnum))
+    (c-with ((val :unsigned-long-long))
+      (let ((register (keyword-register engine register)))
+        (setf val value)
+        (check-rc (uc-reg-write engine register (val &))))))
+  (:method (engine register (value number))
+    (let ((nbytes (ceiling (/ (integer-length value) 8))))
+  (c-with ((val :unsigned-byte :count nbytes))
+              (dotimes (i nbytes)
+                (setf (val i)
+                      (ldb (byte ) value)))
+              (check-rc (uc-reg-write engine register (val &)))))))
 
 (defun write-register (engine register value)
   "Write VALUE to REGISTER of ENGINE."
@@ -126,13 +141,28 @@ The keyword arguments alter this:
   unicorn-ffi:+uc-prot-read+
   unicorn-ffi:+uc-prot-write+)
 
-#+nil
-(defcallback memory-callback :void
-    ((uc :pointer)
-     (address :unsigned-long-long)
-     (size :unsigned-int)
-     (user-data :pointer))
-  (let ((gethash (autowrap:) *hooks*))))
+(autowrap:define-bitmask-from-constants (uc-hook)
+  unicorn-ffi:+uc-hook-intr+
+  unicorn-ffi:+uc-hook-insn+
+  unicorn-ffi:+uc-hook-block+
+  unicorn-ffi:+uc-hook-code+
+  unicorn-ffi:+uc-hook-mem-fetch+
+  unicorn-ffi:+uc-hook-mem-fetch-invalid+
+  unicorn-ffi:+uc-hook-mem-fetch-prot+
+  unicorn-ffi:+uc-hook-mem-fetch-unmapped+
+  unicorn-ffi:+uc-hook-mem-invalid+
+  unicorn-ffi:+uc-hook-mem-prot+
+  unicorn-ffi:+uc-hook-mem-read+
+  unicorn-ffi:+uc-hook-mem-read-after+
+  unicorn-ffi:+uc-hook-mem-read-invalid+
+  unicorn-ffi:+uc-hook-mem-read-prot+
+  unicorn-ffi:+uc-hook-mem-read-unmapped+
+  unicorn-ffi:+uc-hook-mem-unmapped+
+  unicorn-ffi:+uc-hook-mem-valid+
+  unicorn-ffi:+uc-hook-mem-write+
+  unicorn-ffi:+uc-hook-mem-write-invalid+
+  unicorn-ffi:+uc-hook-mem-write-prot+
+  unicorn-ffi:+uc-hook-mem-write-unmapped+)
 
 (defun add-hook (engine type function
                  &key (user-data (cffi:null-pointer))
@@ -140,21 +170,19 @@ The keyword arguments alter this:
   "Add a hook to ENGINE. TYPE must be a valid HOOK-TYPE and FUNCTION must designate a C
 callback. USER-DATA is an optional pointer to .
 BEGIN and END specify the valid range for the callback function."
-  (c-with ((hook unicorn-ffi:uc-hook)
-           (user-data :pointer))
-    (check-rc
-     (uc-hook-add engine
-                  (hook &)
-                  (enum-value 'unicorn-ffi:uc-hook-type type)
-                  (callback function)
-                  user-data
-                  begin
-                  end
-                  :unsigned-long-long
-                  (if instruction-id
-                      (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)
-                      0)))
-    hook))
+  (c-with ((hook unicorn-ffi:uc-hook))
+    (let ((hook-type
+            (if (listp type)
+                (mask-apply 'uc-hook type)
+                (enum-value 'unicorn-ffi:uc-hook-type type)))
+          (insn-id
+            (if instruction-id
+                (enum-value 'unicorn-ffi:uc-x86-insn instruction-id)
+                0)))
+      (check-rc
+       (uc-hook-add engine (hook &) hook-type (callback function)
+                    user-data begin end :unsigned-long-long insn-id))
+      hook)))
 
 (defun remove-hook (engine hook)
   "Remove HOOK from ENGINE."
@@ -172,28 +200,6 @@ BEGIN and END specify the valid range for the callback function."
   "Adjust the memory protection within ENGINE to PERMISSIONS for the address range ADDRESS to
 ADDRESS + SIZE."
   (check-rc (uc-mem-protect engine address size (mask-apply 'uc-prot permissions))))
-
-#+nil
-(progn
-(defun list-memory-regions (engine)
-  (c-with ((regions :pointer)
-           (count :unsigned-int))
-    (check-rc (uc-mem-regions engine (regions &) (count &)))
-    (loop :repeat count
-          :for i :upfrom 0
-          :collect (let* ((ptr (autowrap:c-aref regions i))
-                          (region (autowrap:wrap-pointer ptr 'unicorn-ffi:uc-mem-region)))
-                     (tg:finalize region (lambda () (uc-free ptr)))))))
-
-(defun memory-region-begin (region)
-  (uc-mem-region.begin region))
-
-(defun memory-region-end (region)
-  (uc-mem-region.end region))
-
-(defun memory-region-permissions (region)
-  (mask-keywords 'uc-prot (uc-mem-region.perms region)))
-)
 
 (defmacro with-open-engine ((var architecture mode) &body body)
   "Bind VAR to an open unicorn engine using ARCHITECTURE and MODE within the dynamic context of
